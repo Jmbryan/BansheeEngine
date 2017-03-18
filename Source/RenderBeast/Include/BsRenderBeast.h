@@ -8,6 +8,7 @@
 #include "BsSamplerOverrides.h"
 #include "BsRendererMaterial.h"
 #include "BsLightRendering.h"
+#include "BsReflectionProbeSampling.h"
 #include "BsObjectRendering.h"
 #include "BsPostProcessing.h"
 #include "BsRendererCamera.h"
@@ -63,18 +64,6 @@ namespace bs
 
 			float timeDelta;
 			const RendererAnimationData& animData;
-		};
-
-		/** Information about an active reflection probe. */
-		struct ReflProbeInfo
-		{
-			ReflectionProbe* probe;
-			UINT32 arrayIdx;
-			SPtr<Texture> texture;
-			bool customTexture : 1;
-			bool textureDirty : 1;
-			bool arrayDirty : 1;
-			bool errorFlagged : 1;
 		};
 
 	public:
@@ -138,6 +127,15 @@ namespace bs
 
 		/** @copydoc Renderer::notifyReflectionProbeRemoved */
 		void notifyReflectionProbeRemoved(ReflectionProbe* probe) override;
+
+		/** @copydoc Renderer::notifySkyboxAdded */
+		void notifySkyboxAdded(Skybox* skybox) override;
+
+		/** @copydoc Renderer::notifySkyboxTextureChanged */
+		void notifySkyboxTextureChanged(Skybox* skybox) override;
+
+		/** @copydoc Renderer::notifySkyboxRemoved */
+		void notifySkyboxRemoved(Skybox* skybox) override;
 
 		/** 
 		 * Updates (or adds) renderer specific data for the specified camera. Should be called whenever camera properties
@@ -240,20 +238,26 @@ namespace bs
 		Vector<Sphere> mPointLightWorldBounds;
 		Vector<Sphere> mSpotLightWorldBounds;
 
-		Vector<ReflProbeInfo> mReflProbes;
+		Vector<RendererReflectionProbe> mReflProbes;
 		Vector<Sphere> mReflProbeWorldBounds;
 		Vector<bool> mCubemapArrayUsedSlots;
-		SPtr<Texture> mCubemapArrayTex;
+		SPtr<Texture> mReflCubemapArrayTex;
 
 		SPtr<RenderBeastOptions> mCoreOptions;
 
 		DefaultMaterial* mDefaultMaterial;
-		ITiledDeferredLightingMat* mTiledDeferredLightingMats[4];
+		TiledDeferredLightingMaterials* mTiledDeferredLightingMats;
 		FlatFramebufferToTextureMat* mFlatFramebufferToTextureMat;
 		SkyboxMat<false>* mSkyboxMat;
 		SkyboxMat<true>* mSkyboxSolidColorMat;
 
+		Skybox* mSkybox;
+		SPtr<Texture> mSkyboxTexture;
+		SPtr<Texture> mSkyboxFilteredReflections;
+
+		SPtr<Texture> mPreintegratedEnvBRDF;
 		GPULightData* mGPULightData;
+		GPUReflProbeData* mGPUReflProbeData;
 		LightGrid* mLightGrid;
 
 		ObjectRenderer* mObjectRenderer;
@@ -265,6 +269,9 @@ namespace bs
 		// Helpers to avoid memory allocations
 		Vector<LightData> mLightDataTemp;
 		Vector<bool> mLightVisibilityTemp;
+
+		Vector<ReflProbeData> mReflProbeDataTemp;
+		Vector<bool> mReflProbeVisibilityTemp;
 	};
 
 	/** @} */

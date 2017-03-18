@@ -6,7 +6,7 @@
 #include "BsReflectionProbe.h"
 #include "BsComponent.h"
 
-namespace bs 
+namespace bs
 {
 	/** @addtogroup Components
 	 *  @{
@@ -17,43 +17,58 @@ namespace bs
 	 *
 	 * Wraps ReflectionProbe as a Component.
 	 */
-    class BS_CORE_EXPORT CReflectionProbe : public Component
-    {
-    public:
+	class BS_CORE_EXPORT CReflectionProbe : public Component
+	{
+	public:
 		CReflectionProbe(const HSceneObject& parent);
 		virtual ~CReflectionProbe();
 
-	    /** @copydoc ReflectionProbe::getType */
+		/** @copydoc ReflectionProbe::getType */
 		ReflectionProbeType getType() const { return mInternal->getType(); }
 
-	    /** @copydoc ReflectionProbe::setType */
+		/** @copydoc ReflectionProbe::setType */
 		void setType(ReflectionProbeType type) { mInternal->setType(type); }
 
-	    /** @copydoc ReflectionProbe::getRadius */
+		/** @copydoc ReflectionProbe::getRadius */
 		float getRadius() const { return mInternal->getRadius(); }
 
-	    /** @copydoc ReflectionProbe::setRadius  */
+		/** @copydoc ReflectionProbe::setRadius  */
 		void setRadius(float radius) { mInternal->setRadius(radius); }
 
-	    /** @copydoc ReflectionProbe::getExtents */
+		/** @copydoc ReflectionProbe::getExtents */
 		Vector3 getExtents() const { return mInternal->getExtents(); }
 
-	    /** @copydoc ReflectionProbe::setExtents */
+		/** @copydoc ReflectionProbe::setExtents */
 		void setExtents(const Vector3& extents) { mInternal->setExtents(extents); }
 
-	    /** @copydoc ReflectionProbe::getBounds  */
+		/** Retrieves transition distance set by setTransitionDistance(). */
+		float getTransitionDistance() const { return mInternal->getTransitionDistance(); }
+
+		/** @copydoc ReflectionProbe::setTransitionDistance */
+		void setTransitionDistance(float distance) { mInternal->setTransitionDistance(distance); }
+
+		/** @copydoc ReflectionProbe::getCustomTexture */
+		HTexture getCustomTexture() const { return mInternal->getCustomTexture(); }
+
+		/** @copydoc ReflectionProbe::setCustomTexture */
+		void setCustomTexture(const HTexture& texture) { mInternal->setCustomTexture(texture); }
+
+		/** @copydoc ReflectionProbe::getBounds */
 		Sphere getBounds() const;
 
-		/** @name Internal 
+		/** @copydoc ReflectionProbe::generate */
+		void generate() { mInternal->generate(); }
+
+		/** @name Internal
 		 *  @{
 		 */
 
-	    /**	Returns the reflection probe that this component wraps. */
+		/**	Returns the reflection probe that this component wraps. */
 		SPtr<ReflectionProbe> _getReflectionProbe() const { return mInternal; }
 
 		/** @} */
 
-    protected:
+	protected:
 		mutable SPtr<ReflectionProbe> mInternal;
 
 		/************************************************************************/
@@ -62,10 +77,10 @@ namespace bs
 	protected:
 		friend class SceneObject;
 
-	    /** @copydoc Component::onInitialized */
+		/** @copydoc Component::onInitialized */
 		void onInitialized() override;
 
-	    /** @copydoc Component::onDestroyed */
+		/** @copydoc Component::onDestroyed */
 		void onDestroyed() override;
 
 		/** @copydoc Component::update */
@@ -81,7 +96,7 @@ namespace bs
 
 	protected:
 		CReflectionProbe(); // Serialization only
-     };
+	};
 
-	 /** @} */
+	/** @} */
 }

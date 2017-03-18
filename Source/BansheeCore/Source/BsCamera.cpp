@@ -59,7 +59,8 @@ namespace bs
 	{
 		if (nearPlane <= 0)
 		{
-			BS_EXCEPT(InvalidParametersException, "Near clip distance must be greater than zero.");
+			LOGERR("Near clip distance must be greater than zero.");
+            return;
 		}
 
 		mNearDist = nearPlane;
@@ -733,10 +734,6 @@ namespace bs
 	{
 		UINT32 dirtyFlag = getCoreDirtyFlags();
 
-		SPtr<ct::Texture> skyTexture;
-		if (mSkyTexture.isLoaded())
-			skyTexture = mSkyTexture->getCore();
-
 		UINT32 size = 0;
 		size += rttiGetElemSize(dirtyFlag);
 		size += rttiGetElemSize(mPosition);
@@ -759,7 +756,6 @@ namespace bs
 			size += rttiGetElemSize(mCameraFlags);
 			size += rttiGetElemSize(mIsActive);
 			size += rttiGetElemSize(mMSAA);
-			size += sizeof(SPtr<ct::Texture>);
 			size += sizeof(UINT32);
 
 			if(mPPSettings != nullptr)
@@ -792,10 +788,6 @@ namespace bs
 			dataPtr = rttiWriteElem(mCameraFlags, dataPtr);
 			dataPtr = rttiWriteElem(mIsActive, dataPtr);
 			dataPtr = rttiWriteElem(mMSAA, dataPtr);
-
-			SPtr<ct::Texture>* skyTexDest = new (dataPtr) SPtr<ct::Texture>();
-			*skyTexDest = skyTexture;
-			dataPtr += sizeof(skyTexture);
 
 			dataPtr = rttiWriteElem(ppSize, dataPtr);
 
@@ -886,11 +878,6 @@ namespace bs
 			dataPtr = rttiReadElem(mCameraFlags, dataPtr);
 			dataPtr = rttiReadElem(mIsActive, dataPtr);
 			dataPtr = rttiReadElem(mMSAA, dataPtr);
-
-			SPtr<Texture>* skyTexture = (SPtr<Texture>*)dataPtr;
-			mSkyTexture = *skyTexture;
-			skyTexture->~SPtr<Texture>();
-			dataPtr += sizeof(SPtr<Texture>);
 
 			UINT32 ppSize = 0;
 			dataPtr = rttiReadElem(ppSize, dataPtr);

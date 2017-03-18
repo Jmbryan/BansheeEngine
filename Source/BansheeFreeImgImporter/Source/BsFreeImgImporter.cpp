@@ -15,6 +15,8 @@
 #include "BsVector3.h"
 #include "FreeImage.h"
 #include "BsBitwise.h"
+#include "BsRenderer.h"
+#include "BsReflectionProbes.h"
 
 using namespace std::placeholders;
 
@@ -147,7 +149,9 @@ namespace bs
 
 			std::array<SPtr<PixelData>, 6> cubemapFaces;
 			if (generateCubemap(imgData, textureImportOptions->getCubemapSourceType(), cubemapFaces))
+			{
 				faceData.insert(faceData.begin(), cubemapFaces.begin(), cubemapFaces.end());
+			}
 			else // Fall-back to 2D texture
 			{
 				texType = TEX_TYPE_2D;
@@ -161,8 +165,8 @@ namespace bs
 		}
 
 		UINT32 numMips = 0;
-		if (textureImportOptions->getGenerateMipmaps() && Bitwise::isPow2(faceData[0]->getWidth()) && 
-			Bitwise::isPow2(faceData[0]->getHeight()))
+		if (textureImportOptions->getGenerateMipmaps() && 
+			Bitwise::isPow2(faceData[0]->getWidth()) && Bitwise::isPow2(faceData[0]->getHeight()))
 		{
 			UINT32 maxPossibleMip = PixelUtil::getMaxMipmaps(faceData[0]->getWidth(), faceData[0]->getHeight(), 
 				faceData[0]->getDepth(), faceData[0]->getFormat());

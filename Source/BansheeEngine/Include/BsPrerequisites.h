@@ -90,20 +90,33 @@
 /** @} */
 /** @} */
 
-#if (BS_PLATFORM == BS_PLATFORM_WIN32) && !defined(__MINGW32__)
-#	ifdef BS_EXPORTS
-#		define BS_EXPORT __declspec(dllexport)
-#	else
-#       if defined( __MINGW32__ )
-#           define BS_EXPORT
-#       else
-#    		define BS_EXPORT __declspec(dllimport)
-#       endif
-#	endif
-#elif defined ( BS_GCC_VISIBILITY )
-#    define BS_EXPORT  __attribute__ ((visibility("default")))
-#else
-#    define BS_EXPORT
+// DLL export
+#if BS_PLATFORM == BS_PLATFORM_WIN32 // Windows
+#  if BS_COMPILER == BS_COMPILER_MSVC
+#    if defined(BS_STATIC_LIB)
+#      define BS_EXPORT
+#    else
+#      if defined(BS_EXPORTS)
+#        define BS_EXPORT __declspec(dllexport)
+#      else
+#        define BS_EXPORT __declspec(dllimport)
+#      endif
+#	 endif
+#  else
+#    if defined(BS_STATIC_LIB)
+#      define BS_EXPORT
+#    else
+#      if defined(BS_EXPORTS)
+#        define BS_EXPORT __attribute__ ((dllexport))
+#      else
+#        define BS_EXPORT __attribute__ ((dllimport))
+#      endif
+#	 endif
+#  endif
+#  define BS_HIDDEN
+#else // Linux/Mac settings
+#  define BS_EXPORT __attribute__ ((visibility ("default")))
+#  define BS_HIDDEN __attribute__ ((visibility ("hidden")))
 #endif
 
 #include "BsGameObject.h"
@@ -173,7 +186,7 @@ namespace bs
 	class GUICanvas;
 
 	class RenderableHandler;
-	class ProfilerOverlay;
+	class CProfilerOverlay;
 	class ProfilerOverlayInternal;
 	class DrawHelper;
 	class PlainText;
@@ -189,7 +202,7 @@ namespace bs
 	struct SpriteMaterialInfo;
 
 	typedef GameObjectHandle<CGUIWidget> HGUIWidget;
-	typedef GameObjectHandle<ProfilerOverlay> HProfilerOverlay;
+	typedef GameObjectHandle<CProfilerOverlay> HProfilerOverlay;
 
 	typedef ResourceHandle<SpriteTexture> HSpriteTexture;
 	typedef ResourceHandle<PlainText> HPlainText;

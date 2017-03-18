@@ -36,15 +36,27 @@
 #include "BsReflectionProbes.h"
 #include "BsMeshData.h"
 #include "BsLightGrid.h"
+#include "BsSkybox.h"
 
 using namespace std::placeholders;
 
 namespace bs { namespace ct
 {
+	// Limited by max number of array elements in texture for DX11 hardware
+	constexpr UINT32 MaxReflectionCubemaps = 2048 / 6;
+
 	RenderBeast::RenderBeast()
-		: mDefaultMaterial(nullptr), mTiledDeferredLightingMats(), mFlatFramebufferToTextureMat(nullptr)
-		, mSkyboxMat(nullptr), mSkyboxSolidColorMat(nullptr), mGPULightData(nullptr), mLightGrid(nullptr)
-		, mObjectRenderer(nullptr), mOptions(bs_shared_ptr_new<RenderBeastOptions>()), mOptionsDirty(true)
+		: mDefaultMaterial(nullptr)
+		, mTiledDeferredLightingMats()
+		, mFlatFramebufferToTextureMat(nullptr)
+		, mSkyboxMat(nullptr)
+		, mSkyboxSolidColorMat(nullptr)
+		, mGPULightData(nullptr)
+		, mGPUReflProbeData(nullptr)
+		, mLightGrid(nullptr)
+		, mObjectRenderer(nullptr)
+		, mOptions(bs_shared_ptr_new<RenderBeastOptions>())
+		, mOptionsDirty(true)
 	{ }
 
 	const StringID& RenderBeast::getName() const
@@ -80,12 +92,11 @@ namespace bs { namespace ct
 		mSkyboxSolidColorMat = bs_new<SkyboxMat<true>>();
 		mFlatFramebufferToTextureMat = bs_new<FlatFramebufferToTextureMat>();
 
-		mTiledDeferredLightingMats[0] = bs_new<TTiledDeferredLightingMat<1>>();
-		mTiledDeferredLightingMats[1] = bs_new<TTiledDeferredLightingMat<2>>();
-		mTiledDeferredLightingMats[2] = bs_new<TTiledDeferredLightingMat<4>>();
-		mTiledDeferredLightingMats[3] = bs_new<TTiledDeferredLightingMat<8>>();
+		mTiledDeferredLightingMats = bs_new<TiledDeferredLightingMaterials>();
 
+		mPreintegratedEnvBRDF = TiledDeferredLighting::generatePreintegratedEnvBRDF();
 		mGPULightData = bs_new<GPULightData>();
+		mGPUReflProbeData = bs_new<GPUReflProbeData>();
 		mLightGrid = bs_new<LightGrid>();
 
 		GpuResourcePool::startUp();
@@ -108,6 +119,10 @@ namespace bs { namespace ct
 		mRenderables.clear();
 		mRenderableVisibility.clear();
 
+		mReflCubemapArrayTex = nullptr;
+		mSkyboxTexture = nullptr;
+		mSkyboxFilteredReflections = nullptr;
+
 		PostProcessing::shutDown();
 		GpuResourcePool::shutDown();
 
@@ -115,12 +130,12 @@ namespace bs { namespace ct
 		bs_delete(mSkyboxMat);
 		bs_delete(mSkyboxSolidColorMat);
 		bs_delete(mGPULightData);
+		bs_delete(mGPUReflProbeData);
 		bs_delete(mLightGrid);
 		bs_delete(mFlatFramebufferToTextureMat);
+		bs_delete(mTiledDeferredLightingMats);
 
-		UINT32 numDeferredMats = sizeof(mTiledDeferredLightingMats) / sizeof(mTiledDeferredLightingMats[0]);
-		for (UINT32 i = 0; i < numDeferredMats; i++)
-			bs_delete(mTiledDeferredLightingMats[i]);
+		mPreintegratedEnvBRDF = nullptr;
 
 		RendererUtility::shutDown();
 
@@ -453,15 +468,8 @@ namespace bs { namespace ct
 		UINT32 probeId = (UINT32)mReflProbes.size();
 		probe->setRendererId(probeId);
 
-		mReflProbes.push_back(ReflProbeInfo());
-		ReflProbeInfo& probeInfo = mReflProbes.back();
-		probeInfo.probe = probe;
-		probeInfo.arrayIdx = -1;
-		probeInfo.texture = probe->getCustomTexture();
-		probeInfo.customTexture = probeInfo.texture != nullptr;
-		probeInfo.textureDirty = ReflectionCubemapCache::instance().isDirty(probe->getUUID());
-		probeInfo.arrayDirty = true;
-		probeInfo.errorFlagged = false;
+		mReflProbes.push_back(RendererReflectionProbe(probe));
+		RendererReflectionProbe& probeInfo = mReflProbes.back();
 
 		mReflProbeWorldBounds.push_back(probe->getBounds());
 
@@ -485,6 +493,12 @@ namespace bs { namespace ct
 				probeInfo.arrayIdx = numArrayEntries;
 				mCubemapArrayUsedSlots.push_back(true);
 			}
+
+			if(probeInfo.arrayIdx > MaxReflectionCubemaps)
+			{
+				LOGERR("Reached the maximum number of allowed reflection probe cubemaps at once. "
+					"Ignoring reflection probe data.");
+			}
 		}
 	}
 
@@ -494,14 +508,11 @@ namespace bs { namespace ct
 		UINT32 probeId = probe->getRendererId();
 		mReflProbeWorldBounds[probeId] = probe->getBounds();
 
-		ReflProbeInfo& probeInfo = mReflProbes[probeId];
+		RendererReflectionProbe& probeInfo = mReflProbes[probeId];
 		probeInfo.arrayDirty = true;
 
-		if (!probeInfo.customTexture)
-		{
-			ReflectionCubemapCache::instance().notifyDirty(probe->getUUID());
-			probeInfo.textureDirty = true;
-		}
+		ReflectionCubemapCache::instance().notifyDirty(probe->getUUID());
+		probeInfo.textureDirty = true;
 	}
 
 	void RenderBeast::notifyReflectionProbeRemoved(ReflectionProbe* probe)
@@ -529,6 +540,36 @@ namespace bs { namespace ct
 			mCubemapArrayUsedSlots[arrayIdx] = false;
 
 		ReflectionCubemapCache::instance().unloadCachedTexture(probe->getUUID());
+	}
+
+	void RenderBeast::notifySkyboxAdded(Skybox* skybox)
+	{
+		mSkybox = skybox;
+
+		SPtr<Texture> skyTex = skybox->getTexture();
+		if (skyTex != nullptr && skyTex->getProperties().getTextureType() == TEX_TYPE_CUBE_MAP)
+			mSkyboxTexture = skyTex;
+
+		mSkyboxFilteredReflections = nullptr;
+	}
+
+	void RenderBeast::notifySkyboxTextureChanged(Skybox* skybox)
+	{
+		ReflectionCubemapCache::instance().notifyDirty(skybox->getUUID());
+
+		if (mSkybox == skybox)
+		{
+			mSkyboxTexture = skybox->getTexture();
+			mSkyboxFilteredReflections = nullptr;
+		}
+	}
+
+	void RenderBeast::notifySkyboxRemoved(Skybox* skybox)
+	{
+		ReflectionCubemapCache::instance().unloadCachedTexture(skybox->getUUID());
+
+		if (mSkybox == skybox)
+			mSkyboxTexture = nullptr;
 	}
 
 	SPtr<PostProcessSettings> RenderBeast::createPostProcessSettings() const
@@ -599,6 +640,7 @@ namespace bs { namespace ct
 			viewDesc.noLighting = camera->getFlags().isSet(CameraFlag::NoLighting);
 			viewDesc.triggerCallbacks = true;
 			viewDesc.runPostProcessing = true;
+			viewDesc.renderingReflections = false;
 
 			viewDesc.cullFrustum = camera->getWorldFrustum();
 			viewDesc.visibleLayers = camera->getLayers();
@@ -612,7 +654,6 @@ namespace bs { namespace ct
 			viewDesc.viewTransform = camera->getViewMatrix();
 
 			viewDesc.stateReduction = mCoreOptions->stateReductionMode;
-			viewDesc.skyboxTexture = camera->getSkybox();
 			viewDesc.sceneCamera = camera;
 
 			if (iterFind != mCameras.end())
@@ -842,6 +883,36 @@ namespace bs { namespace ct
 		mLightDataTemp.clear();
 		mLightVisibilityTemp.clear();
 
+		// Gemerate reflection probes and their GPU buffers
+		UINT32 numProbes = (UINT32)mReflProbes.size();
+
+		mReflProbeVisibilityTemp.resize(numProbes, false);
+		for (UINT32 i = 0; i < numViews; i++)
+			views[i]->calculateVisibility(mReflProbeWorldBounds, mReflProbeVisibilityTemp);
+
+		for(UINT32 i = 0; i < numProbes; i++)
+		{
+			if (!mReflProbeVisibilityTemp[i])
+				continue;
+
+			mReflProbeDataTemp.push_back(ReflProbeData());
+			mReflProbes[i].getParameters(mReflProbeDataTemp.back());
+		}
+
+		// Sort probes so bigger ones get accessed first, this way we overlay smaller ones on top of biggers ones when
+		// rendering
+		auto sorter = [](const ReflProbeData& lhs, const ReflProbeData& rhs)
+		{
+			return rhs.radius < lhs.radius;
+		};
+
+		std::sort(mReflProbeDataTemp.begin(), mReflProbeDataTemp.end(), sorter);
+
+		mGPUReflProbeData->setProbes(mReflProbeDataTemp, numProbes);
+
+		mReflProbeDataTemp.clear();
+		mReflProbeVisibilityTemp.clear();
+
 		// Update various buffers required by each renderable
 		UINT32 numRenderables = (UINT32)mRenderables.size();
 		for (UINT32 i = 0; i < numRenderables; i++)
@@ -963,28 +1034,14 @@ namespace bs { namespace ct
 		rapi.setRenderTarget(nullptr);
 
 		// Render light pass
-		ITiledDeferredLightingMat* lightingMat;
-
 		UINT32 numSamples = viewInfo->getNumSamples();
-		switch(numSamples)
-		{
-		case 0:
-		case 1:
-			lightingMat = mTiledDeferredLightingMats[0]; // No MSAA
-			break;
-		case 2:
-			lightingMat = mTiledDeferredLightingMats[1]; // 2X MSAA
-			break;
-		case 4:
-			lightingMat = mTiledDeferredLightingMats[2]; // 4X MSAA
-			break;
-		default:
-			lightingMat = mTiledDeferredLightingMats[3]; // 8X MSAA or higher
-			break;
-		}
+		ITiledDeferredLightingMat* lightingMat = mTiledDeferredLightingMats->get(numSamples, viewInfo->isRenderingReflections());
 
 		lightingMat->setLights(*mGPULightData);
-		lightingMat->execute(renderTargets, perCameraBuffer, viewInfo->renderWithNoLighting());
+		lightingMat->setReflectionProbes(*mGPUReflProbeData, mReflCubemapArrayTex);
+		lightingMat->setSkyReflections(mSkyboxFilteredReflections);
+
+		lightingMat->execute(renderTargets, perCameraBuffer, mPreintegratedEnvBRDF, viewInfo->renderWithNoLighting());
 
 		const RenderAPIInfo& rapiInfo = RenderAPI::instance().getAPIInfo();
 		bool usingFlattenedFB = numSamples > 1 && !rapiInfo.isFlagSet(RenderAPIFeatureFlag::MSAAImageStores);
@@ -1000,11 +1057,10 @@ namespace bs { namespace ct
 		}
 
 		// Render skybox (if any)
-		SPtr<Texture> skyTexture = viewInfo->getSkybox();
-		if (skyTexture != nullptr && skyTexture->getProperties().getTextureType() == TEX_TYPE_CUBE_MAP)
+		if (mSkyboxTexture != nullptr)
 		{
 			mSkyboxMat->bind(perCameraBuffer);
-			mSkyboxMat->setParams(skyTexture, Color::White);
+			mSkyboxMat->setParams(mSkyboxTexture, Color::White);
 		}
 		else
 		{
@@ -1171,51 +1227,70 @@ namespace bs { namespace ct
 
 		bs_frame_mark();
 		{		
+			UINT32 currentCubeArraySize = 0;
+
+			if(mReflCubemapArrayTex != nullptr)
+				mReflCubemapArrayTex->getProperties().getNumArraySlices();
+
 			bool forceArrayUpdate = false;
-			if(mCubemapArrayTex == nullptr || mCubemapArrayTex->getProperties().getNumArraySlices() < numProbes)
+			if(mReflCubemapArrayTex == nullptr || (currentCubeArraySize < numProbes && currentCubeArraySize != MaxReflectionCubemaps))
 			{
 				TEXTURE_DESC cubeMapDesc;
 				cubeMapDesc.type = TEX_TYPE_CUBE_MAP;
-				cubeMapDesc.format = PF_FLOAT16_RGBA;
+				cubeMapDesc.format = PF_FLOAT_R11G11B10;
 				cubeMapDesc.width = ReflectionProbes::REFLECTION_CUBEMAP_SIZE;
 				cubeMapDesc.height = ReflectionProbes::REFLECTION_CUBEMAP_SIZE;
 				cubeMapDesc.numMips = PixelUtil::getMaxMipmaps(cubeMapDesc.width, cubeMapDesc.height, 1, cubeMapDesc.format);
-				cubeMapDesc.numArraySlices = numProbes + 4; // Keep a few empty entries
+				cubeMapDesc.numArraySlices = std::min(MaxReflectionCubemaps, numProbes + 4); // Keep a few empty entries
 
-				mCubemapArrayTex = Texture::create(cubeMapDesc);
+				mReflCubemapArrayTex = Texture::create(cubeMapDesc);
 
 				forceArrayUpdate = true;
 			}
 
-			auto& cubemapArrayProps = mCubemapArrayTex->getProperties();
+			auto& cubemapArrayProps = mReflCubemapArrayTex->getProperties();
+
+			TEXTURE_DESC cubemapDesc;
+			cubemapDesc.type = TEX_TYPE_CUBE_MAP;
+			cubemapDesc.format = PF_FLOAT_R11G11B10;
+			cubemapDesc.width = ReflectionProbes::REFLECTION_CUBEMAP_SIZE;
+			cubemapDesc.height = ReflectionProbes::REFLECTION_CUBEMAP_SIZE;
+			cubemapDesc.numMips = PixelUtil::getMaxMipmaps(cubemapDesc.width, cubemapDesc.height, 1, cubemapDesc.format);
+			cubemapDesc.usage = TU_STATIC | TU_RENDERTARGET;
+
+			SPtr<Texture> scratchCubemap;
+			if (numProbes > 0)
+				scratchCubemap = Texture::create(cubemapDesc);
 
 			FrameQueue<UINT32> emptySlots;
 			for (UINT32 i = 0; i < numProbes; i++)
 			{
-				ReflProbeInfo& probeInfo = mReflProbes[i];
-				if (!probeInfo.customTexture)
+				RendererReflectionProbe& probeInfo = mReflProbes[i];
+
+				if (probeInfo.arrayIdx > MaxReflectionCubemaps)
+					continue;
+
+				if (probeInfo.probe->getType() != ReflectionProbeType::Plane)
 				{
-					if (probeInfo.probe->getType() != ReflectionProbeType::Plane)
+					if (probeInfo.texture == nullptr)
+						probeInfo.texture = ReflectionCubemapCache::instance().getCachedTexture(probeInfo.probe->getUUID());
+
+					if (probeInfo.texture == nullptr || probeInfo.textureDirty)
 					{
-						if (probeInfo.texture == nullptr)
-							probeInfo.texture = ReflectionCubemapCache::instance().getCachedTexture(probeInfo.probe->getUUID());
+						probeInfo.texture = Texture::create(cubemapDesc);
 
-						if (probeInfo.texture == nullptr || probeInfo.textureDirty)
+						if (!probeInfo.customTexture)
 						{
-							TEXTURE_DESC cubemapDesc;
-							cubemapDesc.type = TEX_TYPE_CUBE_MAP;
-							cubemapDesc.format = PF_FLOAT16_RGBA;
-							cubemapDesc.width = ReflectionProbes::REFLECTION_CUBEMAP_SIZE;
-							cubemapDesc.height = ReflectionProbes::REFLECTION_CUBEMAP_SIZE;
-							cubemapDesc.numMips = PixelUtil::getMaxMipmaps(cubemapDesc.width, cubemapDesc.height, 1, cubemapDesc.format);
-
-							probeInfo.texture = Texture::create(cubemapDesc);
-
 							captureSceneCubeMap(probeInfo.texture, probeInfo.probe->getPosition(), true, frameInfo);
-							ReflectionProbes::filterCubemapForSpecular(probeInfo.texture);
-
-							ReflectionCubemapCache::instance().setCachedTexture(probeInfo.probe->getUUID(), probeInfo.texture);
 						}
+						else
+						{
+							SPtr<Texture> customTexture = probeInfo.probe->getCustomTexture();
+							ReflectionProbes::scaleCubemap(customTexture, 0, probeInfo.texture, 0);
+						}
+
+						ReflectionProbes::filterCubemapForSpecular(probeInfo.texture, scratchCubemap);
+						ReflectionCubemapCache::instance().setCachedTexture(probeInfo.probe->getUUID(), probeInfo.texture);
 					}
 				}
 
@@ -1245,7 +1320,7 @@ namespace bs { namespace ct
 					{
 						for(UINT32 face = 0; face < 6; face++)
 							for(UINT32 mip = 0; mip <= srcProps.getNumMipmaps(); mip++)
-								probeInfo.texture->copy(mCubemapArrayTex, face, mip, probeInfo.arrayIdx * 6 + face, mip);
+								probeInfo.texture->copy(mReflCubemapArrayTex, face, mip, probeInfo.arrayIdx * 6 + face, mip);
 					}
 
 					probeInfo.arrayDirty = false;
@@ -1253,6 +1328,28 @@ namespace bs { namespace ct
 
 				// Note: Consider pruning the reflection cubemap array if empty slot count becomes too high
 			}
+
+			// Get reflections for skybox if needed/available
+			if (mSkybox != nullptr && mSkyboxTexture != nullptr)
+			{
+				// If haven't assigned them already, do it now
+				if (mSkyboxFilteredReflections == nullptr)
+				{
+					if (!ReflectionCubemapCache::instance().isDirty(mSkybox->getUUID()))
+						mSkyboxFilteredReflections = ReflectionCubemapCache::instance().getCachedTexture(mSkybox->getUUID());
+					else
+					{
+						mSkyboxFilteredReflections = Texture::create(cubemapDesc);
+
+						ReflectionProbes::scaleCubemap(mSkyboxTexture, 0, mSkyboxFilteredReflections, 0);
+						ReflectionProbes::filterCubemapForSpecular(mSkyboxFilteredReflections, scratchCubemap);
+						ReflectionCubemapCache::instance().setCachedTexture(mSkybox->getUUID(), mSkyboxFilteredReflections);
+					}
+				}
+			}
+			else
+				mSkyboxFilteredReflections = nullptr;
+
 		}
 		bs_frame_clear();
 	}
@@ -1282,6 +1379,7 @@ namespace bs { namespace ct
 		viewDesc.noLighting = false;
 		viewDesc.triggerCallbacks = false;
 		viewDesc.runPostProcessing = false;
+		viewDesc.renderingReflections = true;
 
 		viewDesc.visibleLayers = 0xFFFFFFFFFFFFFFFF;
 		viewDesc.nearPlane = 0.5f;
@@ -1293,20 +1391,6 @@ namespace bs { namespace ct
 
 		viewDesc.stateReduction = mCoreOptions->stateReductionMode;
 		viewDesc.sceneCamera = nullptr;
-
-		// Note: Find a camera to receive skybox from. Skybox should probably be a global property instead of a per-camera
-		// one.
-		for(auto& entry : mRenderTargets)
-		{
-			for(auto& camera : entry.cameras)
-			{
-				if (camera->getSkybox() != nullptr)
-				{
-					viewDesc.skyboxTexture = camera->getSkybox();
-					break;
-				}
-			}
-		}
 
 		Matrix4 viewOffsetMat = Matrix4::translation(-position);
 

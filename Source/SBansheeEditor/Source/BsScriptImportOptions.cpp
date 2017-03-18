@@ -182,7 +182,6 @@ namespace bs
 		thisPtr->getTexImportOptions()->setCubemapSourceType(value);
 	}
 
-
 	ScriptMeshImportOptions::ScriptMeshImportOptions(MonoObject* instance)
 		:ScriptObject(instance)
 	{
